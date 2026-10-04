@@ -2,7 +2,7 @@ name: Flutter APK Build
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, ana ]
 
 jobs:
   build:
@@ -21,6 +21,9 @@ jobs:
       uses: subosito/flutter-action@v2
       with:
         flutter-version: '3.19.x'
+
+    - name: Re-create Android Platform Files
+      run: flutter create . --platforms=android
 
     - name: Install Dependencies
       run: flutter pub get
