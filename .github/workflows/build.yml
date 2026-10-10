@@ -36,5 +36,3 @@ jobs:
       with:
         name: dostyeri-release-apk
         path: build/app/outputs/flutter-apk/app-release.apk
-        
-        
