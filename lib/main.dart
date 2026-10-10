@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 
@@ -31,7 +33,6 @@ class DostYeriApp extends StatelessWidget {
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
-  // DostYeri Bağlantı Penceresi
   void _showDostyeriConnectDialog(BuildContext context) {
     final TextEditingController nickController = TextEditingController();
     final TextEditingController passwordController = TextEditingController();
@@ -89,14 +90,18 @@ class HomeScreen extends StatelessWidget {
               child: const Text('Sohbete Bağlan'),
               onPressed: () {
                 String nick = nickController.text.trim();
-                if (nick.isEmpty) nick = "Misafir_${DateTime.now().millisecond}";
+                if (nick.isEmpty) nick = "Dost_${DateTime.now().millisecond % 1000}";
                 Navigator.of(context).pop();
                 
-                // Chat Ekranına Geçiş
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) => ChatScreen(serverName: 'irc.dostyeri.org', nick: nick),
+                    builder: (context) => ChatScreen(
+                      serverName: 'irc.dostyeri.org',
+                      port: 6667,
+                      nick: nick,
+                      password: passwordController.text.trim(),
+                    ),
                   ),
                 );
               },
@@ -107,9 +112,7 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // Diğer Sunucu Ekleme Penceresi
   void _showAddCustomServerDialog(BuildContext context) {
-    final TextEditingController serverNameController = TextEditingController();
     final TextEditingController serverHostController = TextEditingController();
     final TextEditingController portController = TextEditingController(text: '6667');
     final TextEditingController nickController = TextEditingController();
@@ -130,11 +133,6 @@ class HomeScreen extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
-                  controller: serverNameController,
-                  decoration: const InputDecoration(labelText: 'Sunucu İsmi', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 10),
                 TextField(
                   controller: serverHostController,
                   decoration: const InputDecoration(labelText: 'Sunucu Adresi (Host)', border: OutlineInputBorder()),
@@ -160,11 +158,17 @@ class HomeScreen extends StatelessWidget {
               onPressed: () {
                 String nick = nickController.text.trim();
                 if (nick.isEmpty) nick = "Guest";
+                int port = int.tryParse(portController.text.trim()) ?? 6667;
                 Navigator.of(context).pop();
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) => ChatScreen(serverName: serverHostController.text, nick: nick),
+                    builder: (context) => ChatScreen(
+                      serverName: serverHostController.text.trim(),
+                      port: port,
+                      nick: nick,
+                      password: '',
+                    ),
                   ),
                 );
               },
@@ -179,17 +183,7 @@ class HomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('DostYeri'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () {
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen()));
-            },
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('DostYeri')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 32.0),
         child: Column(
@@ -201,19 +195,6 @@ class HomeScreen extends StatelessWidget {
             const SizedBox(height: 4),
             const Text('www.dostyeri.org', style: TextStyle(color: Colors.pinkAccent, fontWeight: FontWeight.w500)),
             const SizedBox(height: 32),
-            const Text('Biliyor muydunuz?', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            const Text(
-              'DostYeri uygulaması ile kesintisiz sohbet edebilir, üst kısımdaki canlı radyo ile sohbetinizi müzikle taçlandırabilirsiniz.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.black54),
-            ),
-            const SizedBox(height: 40),
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text('Bağlantı Seçenekleri', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            ),
-            const SizedBox(height: 12),
             Card(
               elevation: 2,
               child: ListTile(
@@ -243,13 +224,21 @@ class HomeScreen extends StatelessWidget {
 }
 
 // ============================================================================
-// 2. SOHBET VE CANLI RADYO EKRANI (CHAT UI)
+// 2. SOHBET VE GERÇEK IRC GERÇEKLEŞTİRİMİ (CHAT UI)
 // ============================================================================
 class ChatScreen extends StatefulWidget {
   final String serverName;
+  final int port;
   final String nick;
+  final String password;
 
-  const ChatScreen({super.key, required this.serverName, required this.nick});
+  const ChatScreen({
+    super.key,
+    required this.serverName,
+    this.port = 6667,
+    required this.nick,
+    required this.password,
+  });
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -260,6 +249,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final TextEditingController _messageController = TextEditingController();
 
+  // Socket IRC
+  Socket? _socket;
+  bool _isConnected = false;
+  final Map<String, List<String>> _logs = {'Status': []};
+  List<String> channels = ['Status'];
+
   // Audio Player
   late AudioPlayer _audioPlayer;
   bool _isRadioPlaying = false;
@@ -267,39 +262,132 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   double _radioVolume = 0.8;
   final String _radioStreamUrl = "https://yayin.dostyeri.org:8000/stream";
 
-  // Tab Tamamlama Değişkenleri
-  String _searchPrefix = '';
-  int _matchingIndex = -1;
-  List<String> _matchingNicks = [];
-
-  List<String> channels = ['Status', '#Sohbet', '#Radyo', '#Kelime', '#OperHELP'];
-
-  final List<Map<String, String>> userList = [
-    {'nick': '~Ela', 'role': 'owner'},
-    {'nick': '&G-Bot', 'role': 'admin'},
-    {'nick': '@aDa', 'role': 'op'},
-    {'nick': '%Seth', 'role': 'hop'},
-    {'nick': '+Serdengecti', 'role': 'voice'},
-    {'nick': '+alperen', 'role': 'voice'},
-    {'nick': 'Seda', 'role': 'user'},
-    {'nick': 'RuYa', 'role': 'user'},
-  ];
-
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: channels.length, vsync: this);
     _audioPlayer = AudioPlayer();
+    _connectToIRC();
+  }
+
+  // GERÇEK TCP/IP SOCKET BAĞLANTISI
+  Future<void> _connectToIRC() async {
+    _addLog('Status', '*** ${widget.serverName}:${widget.port} sunucusuna bağlanılıyor...');
+
+    try {
+      _socket = await Socket.connect(
+        widget.serverName,
+        widget.port,
+        timeout: const Duration(seconds: 15),
+      );
+
+      setState(() => _isConnected = true);
+      _addLog('Status', '*** Sunucuya fiziki bağlantı kuruldu. Kimlik gönderiliyor...');
+
+      // Nick şifresi varsa Identify gönder
+      if (widget.password.isNotEmpty) {
+        _sendRaw('PASS ${widget.password}');
+      }
+
+      // IRC Kayıt Dizisi
+      _sendRaw('NICK ${widget.nick}');
+      _sendRaw('USER ${widget.nick} 0 * :DostYeri Mobil User');
+
+      // Sunucudan gelen verileri dinle
+      _socket!.transform(utf8.decoder).transform(const LineSplitter()).listen(
+        (String rawLine) {
+          _handleIrcLine(rawLine);
+        },
+        onError: (err) {
+          _addLog('Status', '*** Bağlantı Hatası: $err');
+          setState(() => _isConnected = false);
+        },
+        onDone: () {
+          _addLog('Status', '*** Sunucu ile bağlantı kesildi.');
+          setState(() => _isConnected = false);
+        },
+      );
+    } catch (e) {
+      _addLog('Status', '*** Bağlantı Kurulamadı: $e');
+      setState(() => _isConnected = false);
+    }
+  }
+
+  // IRC PROTOKOLÜ VE PING/PONG YÖNETİMİ
+  void _handleIrcLine(String line) {
+    if (line.isEmpty) return;
+
+    // 1. PING yanıtı (Kritik: Kopmayı engeller)
+    if (line.startsWith('PING')) {
+      String pingArg = line.substring(5);
+      _sendRaw('PONG $pingArg');
+      return;
+    }
+
+    // 2. Karşılama (MOTD sonu veya Otomatik Katılma)
+    if (line.contains(' 001 ') || line.contains(' 376 ')) {
+      // Başarıyla bağlandıktan sonra varsayılan kanala gir
+      _sendRaw('JOIN #Sohbet');
+    }
+
+    // 3. Kanala Katılma (JOIN)
+    if (line.contains(' JOIN ')) {
+      List<String> parts = line.split(' ');
+      if (parts.length >= 3) {
+        String chan = parts[2].replaceFirst(':', '').trim();
+        if (!channels.contains(chan)) {
+          setState(() {
+            channels.add(chan);
+            _logs[chan] = [];
+            _tabController = TabController(length: channels.length, vsync: this);
+          });
+        }
+      }
+    }
+
+    // Status günlüğüne ham logu veya mesajları yazdır
+    _addLog('Status', line);
+  }
+
+  void _sendRaw(String data) {
+    if (_socket != null && _isConnected) {
+      _socket!.write('$data\r\n');
+    }
+  }
+
+  void _sendMessage() {
+    String text = _messageController.text.trim();
+    if (text.isEmpty) return;
+
+    String currentTab = channels[_tabController.index];
+
+    if (text.startsWith('/')) {
+      // Komut Gönderimi (Örn: /join #kelime)
+      _sendRaw(text.substring(1));
+    } else if (currentTab != 'Status') {
+      // Kanala Mesaj Gönderimi
+      _sendRaw('PRIVMSG $currentTab :$text');
+      _addLog(currentTab, '<${widget.nick}> $text');
+    }
+
+    _messageController.clear();
+  }
+
+  void _addLog(String tabName, String text) {
+    setState(() {
+      _logs.putIfAbsent(tabName, () => []);
+      _logs[tabName]!.add(text);
+    });
   }
 
   @override
   void dispose() {
+    _socket?.destroy();
     _audioPlayer.dispose();
     _tabController.dispose();
     super.dispose();
   }
 
-  // Radyo Başlat/Durdur
   Future<void> _toggleRadio() async {
     try {
       if (_isRadioPlaying) {
@@ -323,99 +411,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
-  // Büyüteç / Tab Tamamlama Mantığı
-  void _handleTabCompletion() {
-    String currentText = _messageController.text;
-    if (currentText.isEmpty) return;
-
-    if (_matchingNicks.isEmpty) {
-      List<String> words = currentText.trim().split(' ');
-      _searchPrefix = words.last.toLowerCase();
-
-      _matchingNicks = userList.map((u) => u['nick']!).where((nick) {
-        String cleanNick = nick.replaceAll(RegExp(r'^[~&@%+]'), '');
-        return cleanNick.toLowerCase().startsWith(_searchPrefix);
-      }).toList();
-
-      _matchingNicks.sort((a, b) => a.compareTo(b));
-      _matchingIndex = 0;
-    } else {
-      _matchingIndex = (_matchingIndex + 1) % _matchingNicks.length;
-    }
-
-    if (_matchingNicks.isNotEmpty) {
-      String selectedNick = _matchingNicks[_matchingIndex].replaceAll(RegExp(r'^[~&@%+]'), '');
-      List<String> words = currentText.trim().split(' ');
-      words.removeLast();
-
-      String newText = words.isEmpty ? '$selectedNick: ' : '${words.join(' ')} $selectedNick ';
-      _messageController.text = newText;
-      _messageController.selection = TextSelection.fromPosition(TextPosition(offset: _messageController.text.length));
-    }
-  }
-
-  // Sekmeye Uzun Basarak Çıkma
-  void _showCloseChannelDialog(String channelName, int index) {
-    if (channelName == 'Status') return;
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('$channelName Kanalından Çık'),
-        content: Text('$channelName sekmesini kapatmak istiyor musunuz?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('İptal')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-            onPressed: () {
-              Navigator.pop(context);
-              setState(() {
-                channels.removeAt(index);
-                _tabController = TabController(length: channels.length, vsync: this);
-              });
-            },
-            child: const Text('Kapat'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // Nick Action Menu
-  void _showUserActionMenu(String targetNick) {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (context) {
-        return Container(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Kullanıcı: $targetNick', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF006689))),
-              const Divider(),
-              ListTile(leading: const Icon(Icons.chat), title: const Text('Özel Mesaj (Query)'), onTap: () => Navigator.pop(context)),
-              ListTile(leading: const Icon(Icons.info), title: const Text('Whois Bilgisi'), onTap: () => Navigator.pop(context)),
-              Row(
-                children: [
-                  Expanded(child: TextButton.icon(icon: const Icon(Icons.add, color: Colors.green), label: const Text('+v Voice'), onPressed: () => Navigator.pop(context))),
-                  Expanded(child: TextButton.icon(icon: const Icon(Icons.star, color: Colors.amber), label: const Text('+o Op'), onPressed: () => Navigator.pop(context))),
-                  Expanded(child: TextButton.icon(icon: const Icon(Icons.shield, color: Colors.purple), label: const Text('+a Sop'), onPressed: () => Navigator.pop(context))),
-                ],
-              ),
-              Row(
-                children: [
-                  Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.orange), onPressed: () => Navigator.pop(context), child: const Text('Kick'))),
-                  const SizedBox(width: 8),
-                  Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(context), child: const Text('Kick + Ban'))),
-                ],
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -424,72 +419,19 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('DostYeri.Org', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            Text('Nick: ${widget.nick} | ${widget.serverName}', style: const TextStyle(fontSize: 11, color: Colors.white70)),
+            Text('DostYeri (${_isConnected ? "Bağlı" : "Bağlantı Yok"})', style: const TextStyle(fontSize: 16)),
+            Text('${widget.nick} | ${widget.serverName}', style: const TextStyle(fontSize: 11, color: Colors.white70)),
           ],
         ),
-        actions: [
-          IconButton(icon: const Icon(Icons.arrow_drop_down_circle_outlined), onPressed: () => _scaffoldKey.currentState?.openEndDrawer()),
-          PopupMenuButton<String>(
-            onSelected: (val) {
-              if (val == 'settings') {
-                Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen()));
-              }
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(value: 'settings', child: Text('Ayarlar')),
-              const PopupMenuItem(value: 'quit', child: Text('Bağlantıyı Kes', style: TextStyle(color: Colors.red))),
-            ],
-          ),
-        ],
         bottom: TabBar(
           controller: _tabController,
           isScrollable: true,
-          indicatorColor: Colors.white,
-          tabs: channels.map((ch) {
-            int idx = channels.indexOf(ch);
-            return GestureDetector(
-              onLongPress: () => _showCloseChannelDialog(ch, idx),
-              child: Tab(text: ch),
-            );
-          }).toList(),
+          tabs: channels.map((ch) => Tab(text: ch)).toList(),
         ),
       ),
-
-      // SAĞ AÇILIR NİCK LİSTESİ
-      endDrawer: Drawer(
-        width: 220,
-        child: Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.only(top: 40, bottom: 10, left: 16),
-              color: const Color(0xFF006689),
-              width: double.infinity,
-              child: Text('Kullanıcılar (${userList.length})', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            ),
-            Expanded(
-              child: ListView.builder(
-                itemCount: userList.length,
-                itemBuilder: (context, index) {
-                  final user = userList[index];
-                  return ListTile(
-                    dense: true,
-                    title: Text(user['nick']!, style: const TextStyle(fontWeight: FontWeight.w600)),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _showUserActionMenu(user['nick']!);
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-
       body: Column(
         children: [
-          // CANLI RADYO OYNATICI BAR
+          // CANLI RADYO BAR
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             color: const Color(0xFF004D66),
@@ -502,14 +444,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                         onPressed: _toggleRadio,
                       ),
                 const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text("DostYeri Canlı Radyo", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
-                      Text(_isRadioPlaying ? "Yayında" : "Radyoyu Başlat", style: const TextStyle(color: Colors.white70, fontSize: 10)),
-                    ],
-                  ),
+                const Expanded(
+                  child: Text("DostYeri Canlı Radyo", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
                 ),
                 SizedBox(
                   width: 80,
@@ -519,7 +455,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     onChanged: (v) {
                       setState(() {
                         _radioVolume = v;
-                        _audioPlayer.setVolume(_radioVolume);
+                        _audioPlayer.setVolume(v);
                       });
                     },
                   ),
@@ -528,124 +464,43 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             ),
           ),
 
-          // SOHBET AKIŞI
+          // SOHBET / LOG ALANI
           Expanded(
             child: TabBarView(
               controller: _tabController,
               children: channels.map((ch) {
-                return ListView(
+                List<String> list = _logs[ch] ?? [];
+                return ListView.builder(
                   padding: const EdgeInsets.all(8),
-                  children: [
-                    Text('[09:30] ** $ch kanalına katıldınız.', style: const TextStyle(color: Colors.grey)),
-                    const Text('[09:31] (<~Ela>) Selam hoş geldiniz!', style: const TextStyle(color: Colors.purple)),
-                    const Text('[09:33] (%Seth) Hoş bulduk, canlı radyo harika çalıyor.', style: const TextStyle(color: Colors.blue)),
-                  ],
+                  itemCount: list.length,
+                  itemBuilder: (context, idx) => Text(list[idx], style: const TextStyle(fontSize: 12)),
                 );
               }).toList(),
             ),
           ),
 
-          // ALT MESAJ GİRİŞ KUTUSU VE BÜYÜTEÇ (TAB)
+          // MESAJ GÖNDERME GİRDİSİ
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            color: Colors.grey.shade200,
+            color: Colors.grey[200],
             child: Row(
               children: [
-                IconButton(
-                  icon: const Icon(Icons.search, color: Color(0xFF006689)),
-                  tooltip: 'Nick Tamamla (Tab)',
-                  onPressed: _handleTabCompletion,
-                ),
                 Expanded(
                   child: TextField(
                     controller: _messageController,
-                    decoration: const InputDecoration(hintText: 'Bir mesaj yazın...', border: InputBorder.none),
+                    decoration: const InputDecoration(
+                      hintText: 'Mesaj yazın veya /komut girin...',
+                      border: InputBorder.none,
+                    ),
+                    onSubmitted: (_) => _sendMessage(),
                   ),
                 ),
                 IconButton(
                   icon: const Icon(Icons.send, color: Color(0xFF006689)),
-                  onPressed: () {
-                    if (_messageController.text.isNotEmpty) {
-                      _messageController.clear();
-                      setState(() => _matchingNicks = []);
-                    }
-                  },
+                  onPressed: _sendMessage,
                 ),
               ],
             ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ============================================================================
-// 3. AYARLAR VE OPER/ADMIN GİRİŞ SAYFASI
-// ============================================================================
-class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
-
-  @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
-}
-
-class _SettingsScreenState extends State<SettingsScreen> {
-  bool _autoOper = false;
-
-  void _showOperSettingsDialog(BuildContext context) {
-    final TextEditingController userCtrl = TextEditingController();
-    final TextEditingController passCtrl = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Oper / Admin Girişi'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: userCtrl, decoration: const InputDecoration(labelText: 'Oper Name', border: OutlineInputBorder())),
-            const SizedBox(height: 10),
-            TextField(controller: passCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'Oper Şifresi', border: OutlineInputBorder())),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('İptal')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF006689), foregroundColor: Colors.white),
-            onPressed: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Oper bilgileri kaydedildi.')));
-            },
-            child: const Text('Kaydet'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Ayarlar'), backgroundColor: const Color(0xFF006689)),
-      body: ListView(
-        children: [
-          const Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Text('Yönetici / Operatör Ayarları', style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF006689))),
-          ),
-          ListTile(
-            leading: const Icon(Icons.admin_panel_settings, color: Colors.redAccent),
-            title: const Text('Oper / Admin Girişi'),
-            subtitle: const Text('/OPER kullanıcı adı ve şifresini tanımlayın'),
-            onTap: () => _showOperSettingsDialog(context),
-          ),
-          SwitchListTile(
-            secondary: const Icon(Icons.autorenew, color: Colors.orange),
-            title: const Text('Otomatik Oper Ol'),
-            subtitle: const Text('Bağlantı kurulduğunda otomatik /OPER gönder'),
-            value: _autoOper,
-            onChanged: (val) => setState(() => _autoOper = val),
           ),
         ],
       ),
