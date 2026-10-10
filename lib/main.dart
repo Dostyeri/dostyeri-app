@@ -27,9 +27,6 @@ class DostYeriApp extends StatelessWidget {
   }
 }
 
-// ============================================================================
-// 1. ANA AÇILIŞ VE SUNUCU SEÇİM EKRANI
-// ============================================================================
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
@@ -223,9 +220,6 @@ class HomeScreen extends StatelessWidget {
   }
 }
 
-// ============================================================================
-// 2. SOHBET VE GERÇEK IRC GERÇEKLEŞTİRİMİ (CHAT UI)
-// ============================================================================
 class ChatScreen extends StatefulWidget {
   final String serverName;
   final int port;
@@ -249,13 +243,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final TextEditingController _messageController = TextEditingController();
 
-  // Socket IRC
   Socket? _socket;
   bool _isConnected = false;
   final Map<String, List<String>> _logs = {'Status': []};
   List<String> channels = ['Status'];
 
-  // Audio Player
   late AudioPlayer _audioPlayer;
   bool _isRadioPlaying = false;
   bool _isRadioLoading = false;
@@ -270,7 +262,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _connectToIRC();
   }
 
-  // GERÇEK TCP/IP SOCKET BAĞLANTISI
   Future<void> _connectToIRC() async {
     _addLog('Status', '*** ${widget.serverName}:${widget.port} sunucusuna bağlanılıyor...');
 
@@ -284,16 +275,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       setState(() => _isConnected = true);
       _addLog('Status', '*** Sunucuya fiziki bağlantı kuruldu. Kimlik gönderiliyor...');
 
-      // Nick şifresi varsa Identify gönder
       if (widget.password.isNotEmpty) {
         _sendRaw('PASS ${widget.password}');
       }
 
-      // IRC Kayıt Dizisi
       _sendRaw('NICK ${widget.nick}');
       _sendRaw('USER ${widget.nick} 0 * :DostYeri Mobil User');
 
-      // Sunucudan gelen verileri dinle
       _socket!.transform(utf8.decoder).transform(const LineSplitter()).listen(
         (String rawLine) {
           _handleIrcLine(rawLine);
@@ -313,24 +301,19 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
-  // IRC PROTOKOLÜ VE PING/PONG YÖNETİMİ
   void _handleIrcLine(String line) {
     if (line.isEmpty) return;
 
-    // 1. PING yanıtı (Kritik: Kopmayı engeller)
     if (line.startsWith('PING')) {
       String pingArg = line.substring(5);
       _sendRaw('PONG $pingArg');
       return;
     }
 
-    // 2. Karşılama (MOTD sonu veya Otomatik Katılma)
     if (line.contains(' 001 ') || line.contains(' 376 ')) {
-      // Başarıyla bağlandıktan sonra varsayılan kanala gir
       _sendRaw('JOIN #Sohbet');
     }
 
-    // 3. Kanala Katılma (JOIN)
     if (line.contains(' JOIN ')) {
       List<String> parts = line.split(' ');
       if (parts.length >= 3) {
@@ -345,7 +328,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       }
     }
 
-    // Status günlüğüne ham logu veya mesajları yazdır
     _addLog('Status', line);
   }
 
@@ -362,10 +344,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     String currentTab = channels[_tabController.index];
 
     if (text.startsWith('/')) {
-      // Komut Gönderimi (Örn: /join #kelime)
       _sendRaw(text.substring(1));
     } else if (currentTab != 'Status') {
-      // Kanala Mesaj Gönderimi
       _sendRaw('PRIVMSG $currentTab :$text');
       _addLog(currentTab, '<${widget.nick}> $text');
     }
@@ -431,7 +411,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       ),
       body: Column(
         children: [
-          // CANLI RADYO BAR
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             color: const Color(0xFF004D66),
@@ -463,8 +442,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               ],
             ),
           ),
-
-          // SOHBET / LOG ALANI
           Expanded(
             child: TabBarView(
               controller: _tabController,
@@ -478,8 +455,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               }).toList(),
             ),
           ),
-
-          // MESAJ GÖNDERME GİRDİSİ
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             color: Colors.grey[200],
